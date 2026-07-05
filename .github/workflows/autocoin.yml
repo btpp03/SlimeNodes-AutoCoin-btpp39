@@ -1,74 +1,35 @@
-name: AutoCoin (SlimeNodes)
+name: SlimeNodes AutoCoin
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "00 00 * * *"
-    - cron: "00 12 * * *"
+    - cron: '30 0 * * *'
+    - cron: '30 12 * * *'
+  workflow_dispatch:
 
 jobs:
-  makecoins:
+  coin:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup sing-box proxy
-        env:
-          RAW_PROXY: ${{ secrets.PROXY }}
         run: |
-          set -e
-          if [[ "$RAW_PROXY" =~ ^(socks5|http|https):// ]]; then
-            echo "PROXY=$RAW_PROXY" >> $GITHUB_ENV
-            exit 0
+          curl -fsSL https://github.com/SagerNet/sing-box/releases/download/v1.11.0/sing-box-1.11.0-linux-amd64.tar.gz | tar xz
+          sudo mv sing-box-1.11.0-linux-amd64/sing-box /usr/local/bin/
+          sudo chmod +x /usr/local/bin/sing-box
+          python3 link_to_sb.py "$VLINK" > /tmp/sb.json 2>/tmp/sb_err.txt || { echo "link_to_sb.py failed:"; cat /tmp/sb_err.txt; exit 1; }
+          nohup sing-box run -c /tmp/sb.json > /tmp/singbox.log 2>&1 &
+          sleep 5
+          if curl -s --socks5-hostname 127.0.0.1:1080 --connect-timeout 10 https://httpbin.org/ip; then echo "Proxy OK"
+          else echo "Proxy check failed, but continuing..."; cat /tmp/singbox.log
           fi
-          [[ "$RAW_PROXY" =~ ^hysteria2:// ]] || { echo "unsupported proxy"; exit 1; }
-          
-          STRIPPED="${RAW_PROXY#hysteria2://}"
-          STRIPPED="${STRIPPED%%#*}"
-          NO_QUERY="${STRIPPED%%\?*}"
-          QUERY="${STRIPPED#*\?}"
-          AUTH_HOST="${NO_QUERY%@*}"
-          HOSTPORT="${NO_QUERY##*@}"
-          USER="${AUTH_HOST%:*}"
-          PASS="${AUTH_HOST#*:}"
-          HOST="${HOSTPORT%:*}"
-          PORT="${HOSTPORT#*:}"
-          
-          PEER=$(echo "$QUERY" | tr '&' '\n' | grep '^peer=' | sed 's/^peer=//')
-          INSECURE=$(echo "$QUERY" | tr '&' '\n' | grep '^insecure=' | sed 's/^insecure=//')
-          ALPN=$(echo "$QUERY" | tr '&' '\n' | grep '^alpn=' | sed 's/^alpn=//')
-          PEER="${PEER:-www.bing.com}"
-          ALPN="${ALPN:-h3}"
-          INSECURE_LINE=""
-          [[ "$INSECURE" == "1" ]] && INSECURE_LINE='"insecure": true,'
-          
-          cat > config.json <<EOF
-          {
-            "log": {"level": "warn"},
-            "inbounds": [{"type":"socks","tag":"socks-in","listen":"127.0.0.1","listen_port":1080}],
-            "outbounds": [{
-              "type":"hysteria2","tag":"hy2-out",
-              "server":"${HOST}","server_port":${PORT},
-              "password":"${PASS}",
-              "tls":{"enabled":true,"server_name":"${PEER}","alpn":["${ALPN}"],${INSECURE_LINE}}
-            }]
-          }
-          EOF
-          
-          wget -qO sing-box.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.13.7/sing-box-1.13.7-linux-amd64.tar.gz
-          tar -xzf sing-box.tar.gz
-          cp sing-box-*/sing-box ./
-          chmod +x ./sing-box
-          
-          ./sing-box run -c config.json &
-          sleep 3
-          curl -sS --socks5 127.0.0.1:1080 https://api.ipify.org || true
-          echo "PROXY=socks5h://127.0.0.1:1080" >> $GITHUB_ENV
+        env:
+          VLINK: ${{ secrets.VLINK }}
 
       - name: Auto Login (Refresh Session)
         env:
           DISCORD_EMAIL: ${{ secrets.DISCORD_EMAIL }}
           DISCORD_PASS: ${{ secrets.DISCORD_PASS }}
-          SOCKS_PROXY: ${{ env.PROXY }}
+          SOCKS_PROXY: socks5h://127.0.0.1:1080
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: |
@@ -83,10 +44,12 @@ jobs:
           fi
 
       - name: Run AutoCoin
+        run: python3 makecoins.py
         env:
           SLIME_SESSION: ${{ env.FRESH_SESSION || secrets.SLIME_SESSION }}
-          PROXY: ${{ env.PROXY }}
+          SOCKS_PROXY: socks5h://127.0.0.1:1080
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        run: |
-          python3 makecoins.py
+          SERVER_ID: ${{ secrets.SERVER_ID }}
+          RENEW_HOURS: "24"
+          RENEW_THRESHOLD: "50"
