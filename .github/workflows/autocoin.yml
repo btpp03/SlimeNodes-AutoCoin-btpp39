@@ -24,10 +24,26 @@ jobs:
           fi
         env:
           VLINK: ${{ secrets.VLINK }}
+      - name: Auto Login (Refresh Session)
+        run: |
+          pip install seleniumbase --quiet
+          python3 auto_login.py
+          if [ -f /tmp/slime_session.txt ]; then
+            echo "FRESH_SESSION=$(cat /tmp/slime_session.txt)" >> $GITHUB_ENV
+            echo "✅ Got fresh session from auto login"
+          else
+            echo "⚠️ Auto login failed, will try with existing SLIME_SESSION"
+          fi
+        env:
+          DISCORD_EMAIL: ${{ secrets.DISCORD_EMAIL }}
+          DISCORD_PASS: ${{ secrets.DISCORD_PASS }}
+          SOCKS_PROXY: socks5h://127.0.0.1:1080
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
       - name: Run AutoCoin
         run: python3 makecoins.py
         env:
-          SLIME_SESSION: ${{ secrets.SLIME_SESSION }}
+          SLIME_SESSION: ${{ env.FRESH_SESSION || secrets.SLIME_SESSION }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           SOCKS_PROXY: socks5h://127.0.0.1:1080
