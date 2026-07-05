@@ -1,52 +1,92 @@
-name: SlimeNodes AutoCoin
+name: AutoCoin (SlimeNodes)
 on:
-  schedule:
-    - cron: '30 0 * * *'
-    - cron: '30 12 * * *'
   workflow_dispatch:
+  schedule:
+    - cron: "00 00 * * *"
+    - cron: "00 12 * * *"
 
 jobs:
-  coin:
+  makecoins:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Setup sing-box proxy
-        run: |
-          curl -fsSL https://github.com/SagerNet/sing-box/releases/download/v1.11.0/sing-box-1.11.0-linux-amd64.tar.gz | tar xz
-          sudo mv sing-box-1.11.0-linux-amd64/sing-box /usr/local/bin/
-          sudo chmod +x /usr/local/bin/sing-box
-          python3 link_to_sb.py "$VLINK" > /tmp/sb.json 2>/tmp/sb_err.txt || { echo "link_to_sb.py failed:"; cat /tmp/sb_err.txt; exit 1; }
-          cat /tmp/sb.json | head -5
-          nohup sing-box run -c /tmp/sb.json > /tmp/singbox.log 2>&1 &
-          sleep 5
-          if curl -s --socks5-hostname 127.0.0.1:1080 --connect-timeout 10 https://httpbin.org/ip; then echo "Proxy OK"
-          else echo "Proxy check failed, but continuing..."; cat /tmp/singbox.log
-          fi
         env:
-          VLINK: ${{ secrets.VLINK }}
-      - name: Auto Login (Refresh Session)
+          RAW_PROXY: ${{ secrets.PROXY }}
         run: |
+          set -e
+          if [[ "$RAW_PROXY" =~ ^(socks5|http|https):// ]]; then
+            echo "PROXY=$RAW_PROXY" >> $GITHUB_ENV
+            exit 0
+          fi
+          [[ "$RAW_PROXY" =~ ^hysteria2:// ]] || { echo "unsupported proxy"; exit 1; }
+          
+          STRIPPED="${RAW_PROXY#hysteria2://}"
+          STRIPPED="${STRIPPED%%#*}"
+          NO_QUERY="${STRIPPED%%\?*}"
+          QUERY="${STRIPPED#*\?}"
+          AUTH_HOST="${NO_QUERY%@*}"
+          HOSTPORT="${NO_QUERY##*@}"
+          USER="${AUTH_HOST%:*}"
+          PASS="${AUTH_HOST#*:}"
+          HOST="${HOSTPORT%:*}"
+          PORT="${HOSTPORT#*:}"
+          
+          PEER=$(echo "$QUERY" | tr '&' '\n' | grep '^peer=' | sed 's/^peer=//')
+          INSECURE=$(echo "$QUERY" | tr '&' '\n' | grep '^insecure=' | sed 's/^insecure=//')
+          ALPN=$(echo "$QUERY" | tr '&' '\n' | grep '^alpn=' | sed 's/^alpn=//')
+          PEER="${PEER:-www.bing.com}"
+          ALPN="${ALPN:-h3}"
+          INSECURE_LINE=""
+          [[ "$INSECURE" == "1" ]] && INSECURE_LINE='"insecure": true,'
+          
+          cat > config.json <<EOF
+          {
+            "log": {"level": "warn"},
+            "inbounds": [{"type":"socks","tag":"socks-in","listen":"127.0.0.1","listen_port":1080}],
+            "outbounds": [{
+              "type":"hysteria2","tag":"hy2-out",
+              "server":"${HOST}","server_port":${PORT},
+              "password":"${PASS}",
+              "tls":{"enabled":true,"server_name":"${PEER}","alpn":["${ALPN}"],${INSECURE_LINE}}
+            }]
+          }
+          EOF
+          
+          wget -qO sing-box.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.13.7/sing-box-1.13.7-linux-amd64.tar.gz
+          tar -xzf sing-box.tar.gz
+          cp sing-box-*/sing-box ./
+          chmod +x ./sing-box
+          
+          ./sing-box run -c config.json &
+          sleep 3
+          curl -sS --socks5 127.0.0.1:1080 https://api.ipify.org || true
+          echo "PROXY=socks5h://127.0.0.1:1080" >> $GITHUB_ENV
+
+      - name: Auto Login (Refresh Session)
+        env:
+          DISCORD_EMAIL: ${{ secrets.DISCORD_EMAIL }}
+          DISCORD_PASS: ${{ secrets.DISCORD_PASS }}
+          SOCKS_PROXY: ${{ env.PROXY }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq xvfb python3-tk python3-dev libgtk-3-0 libasound2 libgbm1 libnss3 libxss1 > /dev/null 2>&1
           pip install seleniumbase --quiet
           python3 auto_login.py
           if [ -f /tmp/slime_session.txt ]; then
             echo "FRESH_SESSION=$(cat /tmp/slime_session.txt)" >> $GITHUB_ENV
-            echo "✅ Got fresh session from auto login"
+            echo "Got fresh session from auto login"
           else
-            echo "⚠️ Auto login failed, will try with existing SLIME_SESSION"
+            echo "Auto login failed, will try with existing SLIME_SESSION"
           fi
-        env:
-          DISCORD_EMAIL: ${{ secrets.DISCORD_EMAIL }}
-          DISCORD_PASS: ${{ secrets.DISCORD_PASS }}
-          SOCKS_PROXY: socks5h://127.0.0.1:1080
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+
       - name: Run AutoCoin
-        run: python3 makecoins.py
         env:
           SLIME_SESSION: ${{ env.FRESH_SESSION || secrets.SLIME_SESSION }}
+          PROXY: ${{ env.PROXY }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          SOCKS_PROXY: socks5h://127.0.0.1:1080
-          SERVER_ID: ${{ secrets.SERVER_ID }}
-          RENEW_HOURS: "24"
-          RENEW_THRESHOLD: "50"
+        run: |
+          python3 makecoins.py
