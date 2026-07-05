@@ -17,10 +17,10 @@ def main():
     TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "")
     
     if not DISCORD_EMAIL or not DISCORD_PASS:
-        print("\u274c DISCORD_EMAIL or DISCORD_PASS not set!")
+        print("[ERROR] DISCORD_EMAIL or DISCORD_PASS not set!")
         sys.exit(1)
     
-    print(f"\ud83d\udfe5 Starting auto-login for {DISCORD_EMAIL}...")
+    print(f"[INFO] Starting auto-login for {DISCORD_EMAIL}...")
     
     proxy_arg = None
     if PROXY:
@@ -33,20 +33,20 @@ def main():
     ) as sb:
         try:
             # Step 1: Go to SlimeNodes login (redirects to Discord OAuth)
-            print("\u2192 Navigating to SlimeNodes login...")
+            print("[INFO] Navigating to SlimeNodes login...")
             sb.uc_open_with_reconnect("https://dash.slimenodes.com/login", 4)
             time.sleep(3)
             
             current_url = sb.get_current_url()
-            print(f"Current URL: {current_url[:100]}")
+            print(f"[INFO] Current URL: {current_url[:100]}")
             
             # We should be on Discord login or authorize page
             if "discord.com" in current_url:
-                print("\u2192 On Discord OAuth page")
+                print("[INFO] On Discord OAuth page")
                 
                 # Check if we need to login to Discord first
                 if "/login" in current_url or "authorize" not in current_url:
-                    print("\u2192 Logging into Discord...")
+                    print("[INFO] Logging into Discord...")
                     
                     # Wait for login form
                     sb.wait_for_element('input[type="email"]', timeout=15)
@@ -60,38 +60,36 @@ def main():
                     # Handle potential captcha/verification
                     current_url = sb.get_current_url()
                     if "verify" in current_url or "captcha" in current_url.lower():
-                        print("\u26a0\ufe0f Discord captcha/verify - using UC click to handle...")
+                        print("[WARN] Discord captcha/verify - using UC click to handle...")
                         try:
                             sb.uc_gui_click_captcha()
                             time.sleep(5)
-                        except:
-                            print("UC captcha click failed, waiting more...")
+                        except Exception as e:
+                            print(f"[WARN] UC captcha click failed: {e}")
                             time.sleep(10)
                     
                     current_url = sb.get_current_url()
-                    print(f"After login: {current_url[:100]}")
+                    print(f"[INFO] After login: {current_url[:100]}")
                 
-                # Check if we're on the authorize page
+                # Check if we are on the authorize page
                 if "authorize" in current_url:
-                    print("\u2192 On authorize page, clicking authorize...")
+                    print("[INFO] On authorize page, clicking authorize...")
                     time.sleep(2)
-                    # Click the authorize button
                     try:
                         sb.wait_for_element('button[data-theme]', timeout=10)
                         sb.uc_click('button[data-theme]')
                     except:
                         try:
-                            # Fall back to clicking any authorize button
                             sb.click('div[role="button"] button')
                         except:
                             sb.click('button')
                     time.sleep(5)
                     current_url = sb.get_current_url()
-                    print(f"After authorize: {current_url[:100]}")
+                    print(f"[INFO] After authorize: {current_url[:100]}")
             
             # Step 2: Check if we got redirected back to SlimeNodes
             if "slimenodes.com" in current_url:
-                print("\u2705 Back on SlimeNodes!")
+                print("[OK] Back on SlimeNodes!")
                 cookies = sb.get_cookies()
                 sid = None
                 for cookie in cookies:
@@ -100,12 +98,12 @@ def main():
                         break
                 
                 if sid:
-                    print(f"\u2705 Got connect.sid: {sid[:30]}...")
+                    print(f"[OK] Got connect.sid: {sid[:30]}...")
                     with open("/tmp/slime_session.txt", "w") as f:
                         f.write(sid)
                     
                     if TG_BOT_TOKEN and TG_CHAT_ID:
-                        msg = f"\ud83d\udfe5 SlimeNodes Auto-Login\n\u2705 Session refreshed\nSID: {sid[:20]}..."
+                        msg = f"SlimeNodes Auto-Login\n[OK] Session refreshed\nSID: {sid[:20]}..."
                         subprocess.run([
                             "curl", "-s", "-X", "POST",
                             f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
@@ -114,11 +112,11 @@ def main():
                         ], capture_output=True, timeout=10)
                     return
                 else:
-                    print("\u274c No connect.sid found in cookies")
-                    print(f"Cookies: {[c.get('name') for c in cookies]}")
+                    print("[ERROR] No connect.sid found in cookies")
+                    print(f"[INFO] Cookies: {[c.get('name') for c in cookies]}")
             
             # Try direct navigation
-            print("\u2192 Trying dashboard directly...")
+            print("[INFO] Trying dashboard directly...")
             sb.uc_open_with_reconnect("https://dash.slimenodes.com/dashboard", 4)
             time.sleep(3)
             
@@ -128,21 +126,21 @@ def main():
                     sid = cookie.get("value")
                     with open("/tmp/slime_session.txt", "w") as f:
                         f.write(sid)
-                    print(f"\u2705 Got connect.sid: {sid[:30]}...")
+                    print(f"[OK] Got connect.sid: {sid[:30]}...")
                     return
             
-            print("\u274c Failed to get connect.sid")
-            print(f"Final URL: {sb.get_current_url()}")
-            print(f"All cookies: {[c.get('name') for c in sb.get_cookies()]}")
+            print("[ERROR] Failed to get connect.sid")
+            print(f"[INFO] Final URL: {sb.get_current_url()}")
+            print(f"[INFO] All cookies: {[c.get('name') for c in sb.get_cookies()]}")
             try:
                 sb.save_screenshot("/tmp/login_debug.png")
-                print("Screenshot saved")
+                print("[INFO] Screenshot saved")
             except:
                 pass
             sys.exit(1)
             
         except Exception as e:
-            print(f"\u274c Error: {e}")
+            print(f"[ERROR] {e}")
             try:
                 sb.save_screenshot("/tmp/login_error.png")
             except:
