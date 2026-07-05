@@ -38,129 +38,127 @@ def main():
             time.sleep(3)
             
             current_url = sb.get_current_url()
-            print(f"[INFO] Current URL: {current_url[:120]}")
+            print(f"[INFO] Current URL: {current_url[:150]}")
             
             # We should be on Discord login or authorize page
             if "discord.com" in current_url:
-                print("[INFO] On Discord OAuth page")
+                print("[INFO] On Discord page")
                 
-                # Check if we need to login to Discord first
-                if "/login" in current_url or "authorize" not in current_url:
+                # Check if we need to login to Discord first (URL contains /login)
+                if "/login" in current_url:
                     print("[INFO] Logging into Discord...")
+                    time.sleep(5)  # Wait for React to render
                     
-                    # Discord login page uses React - wait longer for JS to render
-                    time.sleep(5)
-                    
-                    # Try multiple selectors for email input
-                    email_selectors = [
-                        'input[name="email"]',
-                        'input[type="email"]',
-                        'input[autocomplete="username"]',
-                        '#uid_5',  # Discord sometimes uses generated IDs
-                        'div[class*="inputWrapper"] input',
-                    ]
-                    
-                    email_found = False
-                    for sel in email_selectors:
+                    # Type email
+                    try:
+                        sb.wait_for_element('input[name="email"]', timeout=15)
+                        sb.type('input[name="email"]', DISCORD_EMAIL)
+                        print("[INFO] Email entered")
+                    except Exception as e:
+                        print(f"[ERROR] Could not find email input: {e}")
                         try:
-                            sb.wait_for_element(sel, timeout=10)
-                            print(f"[INFO] Found email input with selector: {sel}")
-                            email_found = True
-                            break
-                        except:
-                            continue
-                    
-                    if not email_found:
-                        # Try with JavaScript to find any visible text input
-                        print("[INFO] Trying JS to find input elements...")
-                        inputs = sb.find_elements("input")
-                        print(f"[INFO] Found {len(inputs)} input elements on page")
-                        for i, inp in enumerate(inputs):
-                            attrs = sb.get_attribute(f"input:nth-of-type({i+1})", "outerHTML") if i < 5 else None
-                            print(f"[INFO] Input {i}: {attrs}")
-                        
-                        # Last resort: try to find by visibility
-                        try:
-                            sb.wait_for_element_visible('input', timeout=10)
-                            email_found = True
-                            print("[INFO] Found generic input element")
+                            page_src = sb.get_page_source()
+                            print(f"[INFO] Page source (first 3000): {page_src[:3000]}")
                         except:
                             pass
+                        sys.exit(1)
                     
-                    if email_found:
-                        # Type email
-                        for sel in email_selectors:
-                            try:
-                                sb.type(sel, DISCORD_EMAIL, timeout=5)
-                                break
-                            except:
-                                continue
-                        
-                        time.sleep(1)
-                        
-                        # Type password
-                        pw_selectors = [
-                            'input[name="password"]',
-                            'input[type="password"]',
-                            'input[autocomplete="current-password"]',
-                        ]
-                        for sel in pw_selectors:
-                            try:
-                                sb.type(sel, DISCORD_PASS, timeout=5)
-                                break
-                            except:
-                                continue
-                        
-                        time.sleep(1)
-                        
-                        # Click login button - try multiple selectors
-                        login_selectors = [
-                            'button[type="submit"]',
-                            'div[class*="button"] button',
-                            'button[class*="submit"]',
-                        ]
-                        for sel in login_selectors:
-                            try:
-                                sb.click(sel, timeout=5)
-                                print(f"[INFO] Clicked login button with selector: {sel}")
-                                break
-                            except:
-                                continue
-                    else:
-                        print("[ERROR] Could not find email input on Discord login page")
+                    time.sleep(1)
+                    
+                    # Type password
+                    try:
+                        sb.type('input[name="password"]', DISCORD_PASS)
+                        print("[INFO] Password entered")
+                    except:
                         try:
-                            page_source = sb.get_page_source()
-                            print(f"[INFO] Page source (first 2000 chars): {page_source[:2000]}")
-                        except:
-                            pass
+                            sb.type('input[type="password"]', DISCORD_PASS)
+                            print("[INFO] Password entered (type=password)")
+                        except Exception as e:
+                            print(f"[ERROR] Could not find password input: {e}")
+                            sys.exit(1)
                     
+                    time.sleep(1)
+                    
+                    # Click login button
+                    try:
+                        sb.click('button[type="submit"]')
+                        print("[INFO] Login button clicked")
+                    except:
+                        try:
+                            sb.click('button')
+                            print("[INFO] Generic button clicked")
+                        except Exception as e:
+                            print(f"[ERROR] Could not click login: {e}")
+                            sys.exit(1)
+                    
+                    # Wait for either redirect or captcha
                     time.sleep(8)
                     
-                    # Handle potential captcha/verification
+                    # Check if we are still on login page (means captcha or error)
                     current_url = sb.get_current_url()
-                    print(f"[INFO] After login attempt: {current_url[:120]}")
+                    print(f"[INFO] After login: {current_url[:150]}")
                     
-                    if "verify" in current_url or "captcha" in current_url.lower() or "hcaptcha" in current_url.lower():
-                        print("[WARN] Discord captcha/verify detected - trying UC click...")
+                    # Check for hCaptcha iframe
+                    captcha_iframes = sb.find_elements('iframe[src*="hcaptcha"]')
+                    if captcha_iframes:
+                        print(f"[INFO] Found {len(captcha_iframes)} hCaptcha iframes")
+                    
+                    # Check for any captcha element
+                    captcha_elements = sb.find_elements('[class*="captcha"]')
+                    if captcha_elements:
+                        print(f"[INFO] Found {len(captcha_elements)} captcha elements")
+                    
+                    # If still on /login, try uc_gui_click_captcha
+                    if "/login" in current_url:
+                        print("[WARN] Still on login page - attempting UC captcha handling...")
                         try:
                             sb.uc_gui_click_captcha()
-                            time.sleep(5)
+                            print("[INFO] UC captcha click done")
+                            time.sleep(8)
                         except Exception as e:
                             print(f"[WARN] UC captcha click failed: {e}")
-                            # Try to reconnect
-                            sb.uc_open_with_reconnect(current_url, 8)
-                            time.sleep(5)
+                            # Try reconnecting
+                            try:
+                                sb.uc_open_with_reconnect(current_url, 8)
+                                time.sleep(5)
+                            except:
+                                pass
+                        
+                        current_url = sb.get_current_url()
+                        print(f"[INFO] After captcha handling: {current_url[:150]}")
                     
-                    current_url = sb.get_current_url()
-                    print(f"[INFO] After verify: {current_url[:120]}")
+                    # If STILL on login, check for error message
+                    if "/login" in current_url:
+                        print("[WARN] Still on login page after captcha attempt")
+                        # Check for error toast/message
+                        try:
+                            error_elements = sb.find_elements('[class*="error"]')
+                            for el in error_elements[:3]:
+                                text = sb.get_text(el)
+                                if text:
+                                    print(f"[INFO] Error element text: {text}")
+                        except:
+                            pass
+                        # Take screenshot
+                        try:
+                            sb.save_screenshot("/tmp/discord_login_fail.png")
+                            print("[INFO] Screenshot saved: /tmp/discord_login_fail.png")
+                        except:
+                            pass
+                    
+                    # Check for 2FA
+                    if "verify" in current_url or "mfa" in current_url:
+                        print("[WARN] 2FA/MFA required - cannot proceed automatically")
+                        sys.exit(1)
                 
-                # Check if we are on the authorize page
-                if "authorize" in current_url:
+                # Check if we are on the actual authorize page (URL contains /oauth2/authorize but NOT /login)
+                if "oauth2/authorize" in current_url and "/login" not in current_url:
                     print("[INFO] On authorize page, clicking authorize...")
                     time.sleep(2)
                     try:
                         sb.wait_for_element('button[data-theme]', timeout=10)
                         sb.uc_click('button[data-theme]')
+                        print("[INFO] Authorize button clicked")
                     except:
                         try:
                             sb.click('div[role="button"] button')
@@ -168,10 +166,10 @@ def main():
                             sb.click('button')
                     time.sleep(5)
                     current_url = sb.get_current_url()
-                    print(f"[INFO] After authorize: {current_url[:120]}")
+                    print(f"[INFO] After authorize: {current_url[:150]}")
             
             # Step 2: Check if we got redirected back to SlimeNodes
-            if "slimenodes.com" in current_url:
+            if "slimenodes.com" in sb.get_current_url():
                 print("[OK] Back on SlimeNodes!")
                 cookies = sb.get_cookies()
                 sid = None
@@ -196,9 +194,9 @@ def main():
                     return
                 else:
                     print("[ERROR] No connect.sid found in cookies")
-                    print(f"[INFO] Cookies: {[c.get('name') for c in cookies]}")
+                    print(f"[INFO] Cookies: {[c.get('name') for c in sb.get_cookies()]}")
             
-            # Try direct navigation
+            # Final attempt - try dashboard directly
             print("[INFO] Trying dashboard directly...")
             sb.uc_open_with_reconnect("https://dash.slimenodes.com/dashboard", 4)
             time.sleep(3)
@@ -217,7 +215,6 @@ def main():
             print(f"[INFO] All cookies: {[c.get('name') for c in sb.get_cookies()]}")
             try:
                 sb.save_screenshot("/tmp/login_debug.png")
-                print("[INFO] Screenshot saved")
             except:
                 pass
             sys.exit(1)
