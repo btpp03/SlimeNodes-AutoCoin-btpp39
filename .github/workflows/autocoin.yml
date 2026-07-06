@@ -25,6 +25,12 @@ jobs:
         env:
           VLINK: ${{ secrets.VLINK }}
 
+      - name: Install system deps for SeleniumBase UC
+        run: |
+          sudo apt-get update -y || sudo apt-get update -y
+          sudo apt-get install -y xvfb python3-tk python3-dev libgtk-3-0 libasound2t64 libgbm1 libnss3 libxss1 || \
+          sudo apt-get install -y xvfb python3-tk python3-dev libgtk-3-0 libasound2 libgbm1 libnss3 libxss1 || true
+
       - name: Auto Login (Refresh Session)
         env:
           DISCORD_EMAIL: ${{ secrets.DISCORD_EMAIL }}
@@ -33,7 +39,6 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq xvfb python3-tk python3-dev libgtk-3-0 libasound2 libgbm1 libnss3 libxss1 > /dev/null 2>&1
           pip install seleniumbase --quiet
           python3 auto_login.py
           if [ -f /tmp/slime_session.txt ]; then
