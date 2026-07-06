@@ -10,13 +10,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Setup sing-box proxy
         run: |
           curl -fsSL https://github.com/SagerNet/sing-box/releases/download/v1.11.0/sing-box-1.11.0-linux-amd64.tar.gz | tar xz
           sudo mv sing-box-1.11.0-linux-amd64/sing-box /usr/local/bin/
           sudo chmod +x /usr/local/bin/sing-box
           python3 link_to_sb.py "$VLINK" > /tmp/sb.json 2>/tmp/sb_err.txt || { echo "link_to_sb.py failed:"; cat /tmp/sb_err.txt; exit 1; }
+          cat /tmp/sb.json | head -5
           nohup sing-box run -c /tmp/sb.json > /tmp/singbox.log 2>&1 &
           sleep 5
           if curl -s --socks5-hostname 127.0.0.1:1080 --connect-timeout 10 https://httpbin.org/ip; then echo "Proxy OK"
@@ -24,34 +24,10 @@ jobs:
           fi
         env:
           VLINK: ${{ secrets.VLINK }}
-
-      - name: Install system deps for SeleniumBase UC
-        run: |
-          sudo apt-get update -y || sudo apt-get update -y
-          sudo apt-get install -y xvfb python3-tk python3-dev libgtk-3-0 libasound2t64 libgbm1 libnss3 libxss1 || \
-          sudo apt-get install -y xvfb python3-tk python3-dev libgtk-3-0 libasound2 libgbm1 libnss3 libxss1 || true
-
-      - name: Auto Login (Refresh Session)
-        env:
-          DISCORD_EMAIL: ${{ secrets.DISCORD_EMAIL }}
-          DISCORD_PASS: ${{ secrets.DISCORD_PASS }}
-          SOCKS_PROXY: socks5h://127.0.0.1:1080
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        run: |
-          pip install seleniumbase --quiet
-          python3 auto_login.py
-          if [ -f /tmp/slime_session.txt ]; then
-            echo "FRESH_SESSION=$(cat /tmp/slime_session.txt)" >> $GITHUB_ENV
-            echo "Got fresh session from auto login"
-          else
-            echo "Auto login failed, will try with existing SLIME_SESSION"
-          fi
-
       - name: Run AutoCoin
         run: python3 makecoins.py
         env:
-          SLIME_SESSION: ${{ env.FRESH_SESSION || secrets.SLIME_SESSION }}
+          SLIME_SESSION: ${{ secrets.SLIME_SESSION }}
           SOCKS_PROXY: socks5h://127.0.0.1:1080
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
