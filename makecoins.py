@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """SlimeNodes Auto-Coin + Auto-Renew (btpp39 session cookie mode)"""
 import os, sys, re, json, time, base64, random, subprocess
-from urllib.parse import unquote
+from urllib.parse import unquote, urlencode
 from datetime import datetime, timezone
 
 BASE = "https://dash.slimenodes.com"
@@ -16,6 +16,23 @@ SESSION = os.environ.get("SLIME_SESSION", "")
 SERVER_ID = os.environ.get("SERVER_ID", "")
 RENEW_THRESHOLD = int(os.environ.get("RENEW_THRESHOLD", "50"))
 RENEW_HOURS = int(os.environ.get("RENEW_HOURS", "24"))
+ACCOUNT_LABEL = os.environ.get("ACCOUNT_LABEL", "39btpp")
+
+# Discord OAuth 自动登录 (纯 HTTP, 免浏览器/hCaptcha)
+DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN", "")
+GH_TOKEN = os.environ.get("GH_TOKEN", "")
+DISCORD_CLIENT_ID = "1267847469501513799"
+OAUTH_REDIRECT_URI = "https://dash.slimenodes.com/callback"
+OAUTH_SCOPE = "identify email guilds.join"
+DISCORD_AUTH_API = "https://discord.com/api/v9/oauth2/authorize"
+DISCORD_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
+
+# Exit codes
+EXIT_OK = 0
+EXIT_NO_SESSION = 1
+EXIT_SESSION_EXPIRED = 2
+EXIT_BALANCE_FAIL = 3
+EXIT_EARN_FAIL = 4
 
 def px(): return ["-x", PX] if PX else []
 def log(m): print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] {m}", flush=True)
@@ -37,6 +54,111 @@ def send_tg(msg):
               "-d", json.dumps({"chat_id": TGC, "text": msg, "parse_mode": "HTML"})], timeout=15)
 
 def ck(s): return f"connect.sid={s}"
+
+# ─── Discord OAuth 自动登录 (纯 HTTP) ──────────────────────────
+
+def update_github_secret(secret_name, new_value):
+    """用 gh secret set 自动更新 GitHub Actions secret"""
+    if not GH_TOKEN:
+        er("未配置 GH_TOKEN，无法自动更新 secret")
+        return False
+    if not new_value:
+        er(f"跳过更新 {secret_name}：新值为空")
+        return False
+    masked = new_value[:4] + "..." + new_value[-4:] if len(new_value) > 8 else "***"
+    log(f"🔄 更新 Secret: {secret_name} (新值: {masked})")
+    try:
+        env = os.environ.copy()
+        env["GH_TOKEN"] = GH_TOKEN
+        proc = subprocess.run(
+            ["gh", "secret", "set", secret_name, "--body", new_value],
+            capture_output=True, text=True, timeout=30, check=False, env=env
+        )
+        if proc.returncode == 0:
+            ok(f"{secret_name} 更新成功")
+            return True
+        else:
+            er(f"更新失败: {proc.stderr.strip()}")
+            return False
+    except FileNotFoundError:
+        er("gh CLI 未安装，无法自动更新 secret")
+        return False
+    except Exception as e:
+        er(f"更新异常: {e}")
+        return False
+
+def discord_get_code():
+    """用 DISCORD_TOKEN 调 authorize API，返回授权码 code"""
+    if not DISCORD_TOKEN:
+        er("未配置 DISCORD_TOKEN，无法自动登录")
+        return None
+    query = urlencode({
+        "client_id": DISCORD_CLIENT_ID,
+        "response_type": "code",
+        "redirect_uri": OAUTH_REDIRECT_URI,
+        "scope": OAUTH_SCOPE,
+    })
+    authorize_url = f"{DISCORD_AUTH_API}?{query}"
+    referer = ("https://discord.com/oauth2/authorize?" + query)
+
+    headers = [
+        "-H", f"authorization: {DISCORD_TOKEN}",
+        "-H", "content-type: application/json",
+        "-H", "origin: https://discord.com",
+        "-H", f"referer: {referer}",
+        "-H", f"user-agent: {DISCORD_UA}",
+    ]
+    body = json.dumps({
+        "permissions": "0",
+        "authorize": True,
+        "integration_type": 0,
+        "location_context": {"guild_id": "10000", "channel_id": "10000", "channel_type": 10000},
+    })
+    out = run_curl(headers + ["-d", body, authorize_url], timeout=25)
+    try:
+        resp = json.loads(out)
+        loc = resp.get("location", "")
+        m = re.search(r"[?&]code=([^&\s]+)", loc)
+        if m:
+            code = m.group(1)
+            ok(f"Discord OAuth 获取授权码成功")
+            return code
+        er(f"Discord authorize 响应无 code: {loc[:120]}")
+    except Exception as e:
+        er(f"Discord authorize 解析失败: {e} | 响应: {out[:150]}")
+    return None
+
+def discord_get_session():
+    """完整 Discord OAuth 流程，返回新的 connect.sid（无则 None）"""
+    log("🔄 尝试 Discord OAuth 自动登录...")
+    code = discord_get_code()
+    if not code:
+        return None
+    # 1. 访问 /callback?code=... (JS 重定向页)
+    cb = run_curl(["-H", f"User-Agent: {UA}", f"{BASE}/callback?code={code}"], timeout=20)
+    m = re.search(r"submitlogin\?code=([^'\"]+)", cb)
+    if not m:
+        er(f"callback 未找到 submitlogin 跳转: {cb[:120]}")
+        return None
+    sub_code = m.group(1)
+    # 2. 访问 /submitlogin?code=... → set-cookie connect.sid
+    hdr = "/tmp/slime_sub.txt"
+    cmd = ["curl", "-s", "-D", hdr, "--connect-timeout", "20", "--max-time", "20"] + px()
+    cmd += ["-H", f"User-Agent: {UA}", f"{BASE}/submitlogin?code={sub_code}"]
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, timeout=25)
+        with open(hdr) as f:
+            for line in f:
+                if line.lower().startswith("set-cookie:"):
+                    m2 = re.search(r"connect\.sid=([^;]+)", line)
+                    if m2:
+                        new_sid = m2.group(1)
+                        ok(f"Discord OAuth 登录成功，获得新 session")
+                        return new_sid
+    except Exception as e:
+        er(f"submitlogin 异常: {e}")
+    er("Discord OAuth 登录后未获得 session cookie")
+    return None
 
 def cooldown(s):
     body = run_curl(["-H", f"User-Agent: {UA}", "-H", f"Cookie: {ck(s)}", f"{BASE}/api/lvcooldown"])
@@ -118,9 +240,13 @@ def renew(s, server_id):
 
 def process(session_id, label="acct"):
     log(f"\n{'='*40}\n账号: {label}\n{'='*40}")
+    exit_code = EXIT_OK
+    session_died = False
     b0 = bal(session_id)
     if b0 is not None: log(f"余额: {b0}币")
-    else: er("无法获取余额")
+    else:
+        er("无法获取余额")
+        exit_code = EXIT_BALANCE_FAIL
 
     earned = 0; bypass = 0; daily = False
     for i in range(MAX):
@@ -128,7 +254,7 @@ def process(session_id, label="acct"):
         if cd.get("dailyLimit"): log("每日上限"); daily = True; break
         ru = gen(session_id)
         if ru == "DAILY_LIMIT": daily = True; break
-        if ru == "SESSION_EXPIRED": er("Session过期"); break
+        if ru == "SESSION_EXPIRED": er("Session过期"); session_died = True; break
         if not ru: er("gen失败"); break
         w = WAIT + random.randint(1, 4)
         log(f"广告{i+1}/{MAX}: 等{w}s...")
@@ -144,7 +270,7 @@ def process(session_id, label="acct"):
             bypass += 1; er("BYPASS")
             if bypass >= 3: break
             time.sleep(10)
-        elif r == "SESSION_EXPIRED": er("Session过期"); break
+        elif r == "SESSION_EXPIRED": er("Session过期"); session_died = True; break
         elif r == "DAILY_LIMIT": daily = True; break
         else:
             er(r)
@@ -156,7 +282,7 @@ def process(session_id, label="acct"):
                     earned += CPC; bypass = 0
                     ok(f"+{CPC} retry OK (total +{earned})")
                     continue
-                elif r2 == "SESSION_EXPIRED": er("Session expired"); break
+                elif r2 == "SESSION_EXPIRED": er("Session expired"); session_died = True; break
                 elif r2 == "DAILY_LIMIT": daily = True; break
                 else: er(f"retry also failed: {r2}")
             time.sleep(random.randint(3, 6))
@@ -192,19 +318,55 @@ def process(session_id, label="acct"):
     elif SERVER_ID and b1 is not None:
         log(f"余额不足续期 (需要{RENEW_THRESHOLD}币, 当前{b1}币)")
 
-    return actual, daily, b1, renewed, hours_left if SERVER_ID else None
+    # Decide exit code
+    if session_died:
+        exit_code = EXIT_SESSION_EXPIRED
+    elif earned == 0 and not daily and not exit_code and b1 is not None and b1 == b0:
+        exit_code = EXIT_EARN_FAIL
+
+    return actual, daily, b1, renewed, hours_left if SERVER_ID else None, exit_code
 
 def main():
-    if not SESSION: er("SLIME_SESSION未设置!"); sys.exit(1)
-    label = "39btpp"
-    c, d, b1, renewed, hours_left = process(SESSION, label)
+    global SESSION
+    if not SESSION:
+        er("SLIME_SESSION未设置!")
+        if DISCORD_TOKEN:
+            log("尝试 Discord OAuth 自动登录获取新 session...")
+            SESSION = discord_get_session()
+            if SESSION:
+                update_github_secret("SLIME_SESSION", SESSION)
+                log("✅ 已通过 Discord 自动登录获得 session")
+            else:
+                sys.exit(EXIT_NO_SESSION)
+        else:
+            sys.exit(EXIT_NO_SESSION)
+
+    label = ACCOUNT_LABEL
+    c, d, b1, renewed, hours_left, exit_code = process(SESSION, label)
+
+    # 若 session 失效 (过期/无法获取余额)，尝试 Discord OAuth 自动重登录一次
+    relogged = False
+    if exit_code in (EXIT_SESSION_EXPIRED, EXIT_BALANCE_FAIL) and DISCORD_TOKEN:
+        er("Session 失效，尝试 Discord OAuth 自动重新登录...")
+        new_session = discord_get_session()
+        if new_session:
+            ok("Discord 自动登录成功，更新 secret 并重试")
+            update_github_secret("SLIME_SESSION", new_session)
+            SESSION = new_session
+            relogged = True
+            c, d, b1, renewed, hours_left, exit_code = process(SESSION, label)
 
     # TG notification
     lines = [f"<b>🟢 SlimeNodes 刷币</b>  {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"]
+    if relogged:
+        lines.append("🔄 (本次已自动刷新 session 并重试)")
     s = "✅" if c > 0 else "❌"
     dl = " (上限)" if d else ""
     bl = f" | 余额{b1}" if b1 is not None else ""
-    lines.append(f"{s} {label}: +{c}币{dl}{bl}")
+    if exit_code == EXIT_SESSION_EXPIRED:
+        lines.append(f"💰 刷币: ❌ SID已过期 (自动重登录也失败)")
+    else:
+        lines.append(f"{s} {label}: +{c}币{dl}{bl}")
     if hours_left is not None and hours_left > 0:
         days = hours_left / 24
         lines.append(f"⏰ 剩余: {hours_left:.0f}小时 ({days:.1f}天)")
@@ -221,6 +383,11 @@ def main():
     lines.append(f"\n💰 总计: +{c}币")
     send_tg("\n".join(lines))
     log("完成!")
+
+    # Exit with proper code so GitHub Actions shows real status
+    if exit_code != EXIT_OK:
+        er(f"退出码: {exit_code}")
+    sys.exit(exit_code)
 
 if __name__ == "__main__":
     main()

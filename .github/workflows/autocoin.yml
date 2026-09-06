@@ -28,6 +28,8 @@ jobs:
         run: python3 makecoins.py
         env:
           SLIME_SESSION: ${{ secrets.SLIME_SESSION }}
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
           SOCKS_PROXY: socks5h://127.0.0.1:1080
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
